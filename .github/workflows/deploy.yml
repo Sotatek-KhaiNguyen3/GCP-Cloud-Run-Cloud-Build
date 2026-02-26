@@ -1,0 +1,113 @@
+name: CI/CD · Build → Push → Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:         # cho phép trigger thủ công từ GitHub UI
+
+# ── Variables cần set trong GitHub → Settings → Variables ───────────────────
+# vars.GCP_PROJECT_ID   : your-gcp-project-id
+# vars.GAR_LOCATION     : asia-southeast1          (hoặc region bạn dùng)
+# vars.GAR_REPOSITORY   : gce-zero2prod            (tên repo trong Artifact Registry)
+
+env:
+  IMAGE_NAME: gce-zero2prod
+  CONTAINER_NAME: gce-zero2prod
+  APP_PORT: 3000
+
+jobs:
+  build-and-deploy:
+    name: Build → Push → Deploy
+    runs-on: self-hosted       # ← chạy trực tiếp trên GCE instance
+
+    steps:
+      # ── 1. Checkout ─────────────────────────────────────────────────────
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # ── 2. Metadata ─────────────────────────────────────────────────────
+      - name: Set build metadata
+        id: meta
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          SHORT_SHA="${GITHUB_SHA::7}"
+
+          GAR_HOST="${{ vars.GAR_LOCATION }}-docker.pkg.dev"
+          IMAGE_BASE="${GAR_HOST}/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ env.IMAGE_NAME }}"
+
+          echo "version=${VERSION}"                       >> "$GITHUB_OUTPUT"
+          echo "build_time=${BUILD_TIME}"                 >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHORT_SHA}"                   >> "$GITHUB_OUTPUT"
+          echo "image_versioned=${IMAGE_BASE}:${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "image_latest=${IMAGE_BASE}:latest"        >> "$GITHUB_OUTPUT"
+          echo "gar_host=${GAR_HOST}"                     >> "$GITHUB_OUTPUT"
+
+      # ── 3. Auth Docker → Artifact Registry ──────────────────────────────
+      # GCE service account tự động có credentials → không cần secret
+      - name: Configure Docker for Artifact Registry
+        run: |
+          gcloud auth configure-docker ${{ steps.meta.outputs.gar_host }} --quiet
+
+      # ── 4. Build ─────────────────────────────────────────────────────────
+      - name: Build Docker image
+        run: |
+          docker build \
+            --build-arg APP_VERSION="${{ steps.meta.outputs.version }}" \
+            --build-arg BUILD_TIME="${{ steps.meta.outputs.build_time }}" \
+            --tag "${{ steps.meta.outputs.image_versioned }}" \
+            --tag "${{ steps.meta.outputs.image_latest }}" \
+            .
+
+      # ── 5. Push → Artifact Registry ──────────────────────────────────────
+      - name: Push to Artifact Registry
+        run: |
+          docker push "${{ steps.meta.outputs.image_versioned }}"
+          docker push "${{ steps.meta.outputs.image_latest }}"
+
+      # ── 6. Deploy container ───────────────────────────────────────────────
+      - name: Deploy new container
+        run: |
+          # Dừng & xoá container cũ (bỏ qua lỗi nếu chưa tồn tại)
+          docker stop "${{ env.CONTAINER_NAME }}" 2>/dev/null || true
+          docker rm   "${{ env.CONTAINER_NAME }}" 2>/dev/null || true
+
+          # Chạy container mới
+          docker run -d \
+            --name "${{ env.CONTAINER_NAME }}" \
+            --restart unless-stopped \
+            -p ${{ env.APP_PORT }}:${{ env.APP_PORT }} \
+            -e APP_NAME="${{ env.IMAGE_NAME }}" \
+            -e APP_VERSION="${{ steps.meta.outputs.version }}" \
+            -e BUILD_TIME="${{ steps.meta.outputs.build_time }}" \
+            "${{ steps.meta.outputs.image_versioned }}"
+
+      # ── 7. Health check ───────────────────────────────────────────────────
+      - name: Health check
+        run: |
+          echo "Waiting for app to start..."
+          sleep 4
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:${{ env.APP_PORT }}/health)
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "Health check FAILED (HTTP $HTTP_CODE)"
+            docker logs "${{ env.CONTAINER_NAME }}" --tail 30
+            exit 1
+          fi
+          echo "Health check PASSED (HTTP $HTTP_CODE)"
+
+      # ── 8. Print deployment summary ───────────────────────────────────────
+      - name: Deployment summary
+        run: |
+          echo ""
+          echo "  ✅ Deploy successful!"
+          echo "  ─────────────────────────────────────"
+          echo "  Version  : ${{ steps.meta.outputs.version }}"
+          echo "  Commit   : ${{ steps.meta.outputs.short_sha }}"
+          echo "  Build    : ${{ steps.meta.outputs.build_time }}"
+          echo "  Image    : ${{ steps.meta.outputs.image_versioned }}"
+          echo "  ─────────────────────────────────────"
+
+      # ── 9. Cleanup ────────────────────────────────────────────────────────
+      - name: Prune dangling images
+        if: always()
+        run: docker image prune -f
