@@ -80,7 +80,7 @@ substitutions:
   _REPO: gce-zero2prod                 # Artifact Registry repository name
   _SERVICE: zero2prod-webapp           # Cloud Run service name
   _GAR_HOST: asia-southeast1-docker.pkg.dev # Artifact Registry host for asia-southeast1
-  _CLOUDRUN_SA: cloudrun-zero2prod-sa  # Cloud Run service account ID
+  _CLOUDRUN_SA: gce-zero2prod-sa        # Cloud Run service account ID
 
 options:
   logging: CLOUD_LOGGING_ONLY # Write logs to Cloud Logging only (no GCS bucket needed)
