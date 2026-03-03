@@ -1,6 +1,5 @@
-# cloudbuild.yaml
 steps:
-  # ── 1. Read metadata package.json ────────────────────────────────────────
+  # ── 1. Read metadata from package.json ────────────────────────────────────
   - name: 'node:20-alpine'
     id: 'metadata'
     entrypoint: sh
@@ -9,103 +8,79 @@ steps:
       - |
         # Ensure package.json exists and has a version field
         if [ ! -f package.json ]; then
-          echo "Error: package.json not found in current directory."
+          echo "Error: package.json not found."
           exit 1
         fi
         VERSION=$(node -p "require('./package.json').version")
         BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-        echo "$VERSION"    > /workspace/_version
-        echo "$BUILD_TIME" > /workspace/_build_time
-        echo "Version  : $VERSION"
-        echo "BuildTime: $BUILD_TIME"
-    # Default working directory is the repo root
+        echo "$$VERSION"    > /workspace/_version
+        echo "$$BUILD_TIME" > /workspace/_build_time
+        echo "Version  : $$VERSION"
+        echo "BuildTime: $$BUILD_TIME"
 
-  # ── 2. Build Docker image ───────────────────────────────────────────────────
+  # ── 2. Build Docker image ──────────────────────────────────────────────────
   - name: 'gcr.io/cloud-builders/docker'
     id: 'build'
-    args:
-      - 'build'
-      - '-t'
-      - '${_GAR_HOST}/${PROJECT_ID}/${_REPO}/${_SERVICE}:$(cat /workspace/_version)' # versioned tag
-      - '-t'
-      - '${_GAR_HOST}/${PROJECT_ID}/${_REPO}/${_SERVICE}:latest' # latest tag
-      - '--build-arg'
-      - 'APP_VERSION=$(cat /workspace/_version)'
-      - '--build-arg'
-      - 'BUILD_TIME=$(cat /workspace/_build_time)'
-      - '.'
-    # Default working directory is the repo root
-
-  # ── 3. Push to Artifact Registry ───────────────────────────────────────────
-  - name: 'gcr.io/cloud-builders/docker'
-    id: 'push'
-    args:
-      - 'push'
-      - '${_GAR_HOST}/${PROJECT_ID}/${_REPO}/${_SERVICE}:$(cat /workspace/_version)'
-      - '${_GAR_HOST}/${PROJECT_ID}/${_REPO}/${_SERVICE}:latest'
-
-  # ── 4. Deploy to Cloud Run ──────────────────────────────────────────────────
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-    id: 'deploy'
-    entrypoint: gcloud
-    args:
-      - 'run'
-      - 'deploy'
-      - '${_SERVICE}'
-      - '--image'
-      - '${_GAR_HOST}/${PROJECT_ID}/${_REPO}/${_SERVICE}:$(cat /workspace/_version)'
-      - '--region=${_REGION}'
-      - '--platform=managed'
-      - '--allow-unauthenticated' # Allow public access
-      - '--service-account=${_CLOUDRUN_SA}@${PROJECT_ID}.iam.gserviceaccount.com'
-      - '--set-env-vars=APP_NAME=${_SERVICE},APP_VERSION=$(cat /workspace/_version),BUILD_TIME=$(cat /workspace/_build_time)'
-      - '--set-secrets=ADMIN_PASSWORD=ADMIN_PASSWORD:latest' # ENV_VAR=SECRET_NAME:version
-      - '--min-instances=0'
-      - '--max-instances=3'
-      - '--memory=256Mi'
-      - '--port=3000' # Port the Node.js app listens on inside the container
-      - '--labels=managed-by=cloudbuild' # Label to identify this service is managed by Cloud Build
-
-    # After deploy, fetch the service URL to print in the build log
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-    id: 'get-url'
-    entrypoint: gcloud
-    args:
-      - 'run'
-      - 'services'
-      - 'describe'
-      - '${_SERVICE}'
-      - '--region=${_REGION}'
-      - '--format=value(status.url)'
-    # Pass the URL as an env var to the next step
-    env:
-      - 'CLOUD_RUN_URL'
-
-  - name: 'node:20-alpine' # Reuse node builder to print a clean deploy summary
-    id: 'output-info'
     entrypoint: sh
     args:
       - -c
       - |
         VERSION=$(cat /workspace/_version)
-        IMAGE="${_GAR_HOST}/${PROJECT_ID}/${_REPO}/${_SERVICE}:$VERSION"
-        echo "---------------------------------------------------------"
-        echo "  Deploy OK: ${CLOUD_RUN_URL}"
-        echo "  Service  : ${_SERVICE}"
-        echo "  Version  : $VERSION"
-        echo "  Image    : $IMAGE"
-        echo "---------------------------------------------------------"
+        BUILD_TIME=$(cat /workspace/_build_time)
+        docker build \
+          -t ${_GAR_HOST}/${PROJECT_ID}/${_REPO}/${_SERVICE}:$$VERSION \
+          -t ${_GAR_HOST}/${PROJECT_ID}/${_REPO}/${_SERVICE}:latest \
+          --build-arg APP_VERSION=$$VERSION \
+          --build-arg BUILD_TIME=$$BUILD_TIME \
+          .
+
+  # ── 3. Push to Artifact Registry ──────────────────────────────────────────
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'push'
+    entrypoint: sh
+    args:
+      - -c
+      - |
+        VERSION=$(cat /workspace/_version)
+        docker push ${_GAR_HOST}/${PROJECT_ID}/${_REPO}/${_SERVICE}:$$VERSION
+        docker push ${_GAR_HOST}/${PROJECT_ID}/${_REPO}/${_SERVICE}:latest
+
+  # ── 4. Deploy to Cloud Run ────────────────────────────────────────────────
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'deploy'
+    entrypoint: sh
+    args:
+      - -c
+      - |
+        VERSION=$(cat /workspace/_version)
+        BUILD_TIME=$(cat /workspace/_build_time)
+        gcloud run deploy ${_SERVICE} \
+          --image=${_GAR_HOST}/${PROJECT_ID}/${_REPO}/${_SERVICE}:$$VERSION \
+          --region=${_REGION} \
+          --platform=managed \
+          --allow-unauthenticated \
+          --service-account=${_CLOUDRUN_SA}@${PROJECT_ID}.iam.gserviceaccount.com \
+          --set-env-vars=APP_NAME=${_SERVICE},APP_VERSION=$$VERSION,BUILD_TIME=$$BUILD_TIME \
+          --set-secrets=ADMIN_PASSWORD=ADMIN_PASSWORD:latest \
+          --min-instances=0 \
+          --max-instances=3 \
+          --memory=256Mi \
+          --port=3000 \
+          --labels=managed-by=cloudbuild
+        URL=$(gcloud run services describe ${_SERVICE} \
+          --region=${_REGION} \
+          --format="value(status.url)")
+        echo ""
+        echo "  Deploy OK : $$URL"
+        echo "  Version   : $$VERSION"
+        echo "  Image     : ${_GAR_HOST}/${PROJECT_ID}/${_REPO}/${_SERVICE}:$$VERSION"
 
 substitutions:
   _REGION: asia-southeast1             # Cloud Run and Artifact Registry region
   _REPO: gce-zero2prod                 # Artifact Registry repository name
   _SERVICE: zero2prod-webapp           # Cloud Run service name
   _GAR_HOST: asia-southeast1-docker.pkg.dev # Artifact Registry host for asia-southeast1
-  _CLOUDRUN_SA: cloudrun-zero2prod-sa  # SA ID for Cloud Run
+  _CLOUDRUN_SA: cloudrun-zero2prod-sa  # Cloud Run service account ID
 
 options:
   logging: CLOUD_LOGGING_ONLY # Write logs to Cloud Logging only (no GCS bucket needed)
-
-images:
-  - '${_GAR_HOST}/${PROJECT_ID}/${_REPO}/${_SERVICE}:$(cat /workspace/_version)'
-  - '${_GAR_HOST}/${PROJECT_ID}/${_REPO}/${_SERVICE}:latest'
