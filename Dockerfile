@@ -1,9 +1,7 @@
-# ── Build args (inject in CI/CD pipeline) ──────────────────────────────────
+FROM node:20-alpine
+
 ARG APP_VERSION=1.0.0
 ARG BUILD_TIME=unknown
-
-# ── Runtime ─────────────────────────────────────────────────────────────────
-FROM node:20-alpine
 
 WORKDIR /app
 

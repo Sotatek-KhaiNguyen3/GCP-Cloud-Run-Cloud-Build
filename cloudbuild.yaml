@@ -1,0 +1,85 @@
+steps:
+  # ── 1. Đọc metadata ────────────────────────────────────────────────────────
+  - name: 'node:20-alpine'
+    id: 'metadata'
+    entrypoint: sh
+    args:
+      - -c
+      - |
+        VERSION=$(node -p "require('./package.json').version")
+        BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+        echo "$VERSION"    > /workspace/_version
+        echo "$BUILD_TIME" > /workspace/_build_time
+        echo "Version  : $VERSION"
+        echo "BuildTime: $BUILD_TIME"
+
+  # ── 2. Build Docker image ───────────────────────────────────────────────────
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build'
+    entrypoint: sh
+    args:
+      - -c
+      - |
+        VERSION=$(cat /workspace/_version)
+        BUILD_TIME=$(cat /workspace/_build_time)
+        IMAGE="${_GAR_HOST}/$PROJECT_ID/${_REPO}/${_SERVICE}"
+        docker build \
+          --build-arg APP_VERSION="$VERSION" \
+          --build-arg BUILD_TIME="$BUILD_TIME" \
+          -t "$IMAGE:$VERSION" \
+          -t "$IMAGE:latest" \
+          .
+
+  # ── 3. Push lên Artifact Registry ──────────────────────────────────────────
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'push'
+    entrypoint: sh
+    args:
+      - -c
+      - |
+        VERSION=$(cat /workspace/_version)
+        IMAGE="${_GAR_HOST}/$PROJECT_ID/${_REPO}/${_SERVICE}"
+        docker push "$IMAGE:$VERSION"
+        docker push "$IMAGE:latest"
+
+  # ── 4. Deploy lên Cloud Run ─────────────────────────────────────────────────
+  - name: 'gcr.io/cloud-builders/gcloud'
+    id: 'deploy'
+    entrypoint: sh
+    args:
+      - -c
+      - |
+        VERSION=$(cat /workspace/_version)
+        BUILD_TIME=$(cat /workspace/_build_time)
+        IMAGE="${_GAR_HOST}/$PROJECT_ID/${_REPO}/${_SERVICE}"
+
+        gcloud run deploy ${_SERVICE} \
+          --image="$IMAGE:$VERSION" \
+          --region=${_REGION} \
+          --platform=managed \
+          --allow-unauthenticated \
+          --service-account="${_CLOUDRUN_SA}@$PROJECT_ID.iam.gserviceaccount.com" \
+          --set-env-vars="APP_NAME=${_SERVICE},APP_VERSION=$VERSION,BUILD_TIME=$BUILD_TIME" \
+          --set-secrets="ADMIN_PASSWORD=ADMIN_PASSWORD:latest" \
+          --min-instances=0 \
+          --max-instances=3 \
+          --memory=256Mi \
+          --port=3000
+
+        URL=$(gcloud run services describe ${_SERVICE} \
+          --region=${_REGION} \
+          --format="value(status.url)")
+        echo ""
+        echo "  Deploy OK: $URL"
+        echo "  Version  : $VERSION"
+        echo "  Image    : $IMAGE:$VERSION"
+
+substitutions:
+  _REGION: asia-southeast1
+  _REPO: gce-zero2prod
+  _SERVICE: gce-zero2prod
+  _GAR_HOST: asia-southeast1-docker.pkg.dev
+  _CLOUDRUN_SA: cloudrun-zero2prod-sa
+
+options:
+  logging: CLOUD_LOGGING_ONLY
