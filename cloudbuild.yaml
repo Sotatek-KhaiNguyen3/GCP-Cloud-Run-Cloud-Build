@@ -16,7 +16,7 @@ substitutions:
   _SERVICE_NAME:             cloudrun-zero2prod
   _REGION:                   asia-southeast1
   _CLOUDRUN_SA:              cloudrun-sa@${PROJECT_ID}.iam.gserviceaccount.com
-  _INSTANCE_CONNECTION_NAME: ${PROJECT_ID}:asia-southeast1:cloudrun-zero2prod-db
+  _INSTANCE_CONNECTION_NAME: ${PROJECT_ID}:asia-southeast1:zero2prod-db
   _DB_NAME:                  zero2prod
   _DB_USER:                  app_user
 
