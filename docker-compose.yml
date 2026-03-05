@@ -1,0 +1,47 @@
+services:
+
+  # ── Tier 1: Node.js App ────────────────────────────────────────────────────
+  app:
+    build:
+      context: .
+      args:
+        APP_VERSION: "1.0.0"
+        BUILD_TIME: "${BUILD_TIME:-local}"
+    ports:
+      - "8080:8080"
+    environment:
+      APP_NAME: cloudrun-zero2prod
+      APP_VERSION: "1.0.0"
+      BUILD_TIME: "${BUILD_TIME:-local}"
+      PORT: 8080
+      # Local dev: kết nối PostgreSQL qua TCP (service name = db)
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Tier 2: PostgreSQL ────────────────────────────────────────────────────
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql  # auto-run khi init
+    ports:
+      - "5432:5432"   # expose ra local để dùng psql / DBeaver
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app_user -d zero2prod"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
