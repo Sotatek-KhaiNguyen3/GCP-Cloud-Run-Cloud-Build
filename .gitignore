@@ -4,7 +4,6 @@ npm-debug.log*
 .env
 .env.*
 !.env.example
-DEPLOYMENT_THINKING.md
 .DS_Store
 Thumbs.db
 .vscode/
