@@ -21,20 +21,27 @@ substitutions:
   _DB_USER:                  app_user
 
 steps:
+  # ── 0. Generate build timestamp ────────────────────────────────────────────
+  - id: prepare
+    name: bash
+    args:
+      - -c
+      - date -u +%Y-%m-%dT%H:%M:%SZ > /workspace/build_time.txt
+
   # ── 1. Build Docker image ───────────────────────────────────────────────────
   - id: build
     name: gcr.io/cloud-builders/docker
+    entrypoint: bash
     args:
-      - build
-      - --build-arg
-      - APP_VERSION=$TAG_NAME
-      - --build-arg
-      - BUILD_TIME=$BUILD_TIMESTAMP
-      - --tag
-      - ${_GAR_LOCATION}-docker.pkg.dev/$PROJECT_ID/${_GAR_REPOSITORY}/app:$SHORT_SHA
-      - --tag
-      - ${_GAR_LOCATION}-docker.pkg.dev/$PROJECT_ID/${_GAR_REPOSITORY}/app:latest
-      - .
+      - -c
+      - >-
+        docker build
+        --build-arg APP_VERSION=$TAG_NAME
+        --build-arg BUILD_TIME=$(cat /workspace/build_time.txt)
+        --tag ${_GAR_LOCATION}-docker.pkg.dev/$PROJECT_ID/${_GAR_REPOSITORY}/app:$SHORT_SHA
+        --tag ${_GAR_LOCATION}-docker.pkg.dev/$PROJECT_ID/${_GAR_REPOSITORY}/app:latest
+        .
+    waitFor: [prepare]
 
   # ── 2. Push → Artifact Registry ────────────────────────────────────────────
   - id: push
@@ -78,14 +85,13 @@ steps:
     entrypoint: sh
     args:
       - -c
-      - npm ci --omit=dev && node scripts/record-deploy.js
+      - npm ci --omit=dev && BUILD_TIME=$(cat /workspace/build_time.txt) node scripts/record-deploy.js
     env:
       - INSTANCE_CONNECTION_NAME=${_INSTANCE_CONNECTION_NAME}
       - DB_NAME=${_DB_NAME}
       - DB_USER=${_DB_USER}
       - VERSION=$TAG_NAME
       - COMMIT_SHA=$SHORT_SHA
-      - BUILD_TIME=$BUILD_TIMESTAMP
     secretEnv: [DB_PASSWORD]
     waitFor: [deploy]
 
